@@ -15,7 +15,7 @@
  */
 
 // OpenCL SDK includes
-#include <CL/Utils/Utils.hpp>
+#include <CL/Utils/File.hpp>
 #include <CL/SDK/Context.hpp>
 #include <CL/SDK/Options.hpp>
 #include <CL/SDK/CLI.hpp>
@@ -87,9 +87,17 @@ int main(int argc, char* argv[])
                       << "Selected device: " << device.getInfo<CL_DEVICE_NAME>()
                       << "\n"
                       << std::endl;
-
-
-
+        cl_int error;
+        std::vector<cl::Device> devices = context.getInfo<CL_CONTEXT_DEVICES>();
+        const char* program_name = "Collatz";
+        cl::Program::Binaries binaries =
+            cl::util::read_binary_files(devices, program_name, &error);
+        if (error != CL_SUCCESS)
+        {
+            std::cout << "File not found";
+            return 0;
+        }
+        std::cout << "File found!";
         return 0;
 
 	} catch (cl::BuildError& e)
