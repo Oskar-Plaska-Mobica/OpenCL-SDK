@@ -23,5 +23,9 @@ namespace util {
     Program::Binaries UTILSCPP_EXPORT read_binary_files(
         const std::vector<cl::Device>& devices,
                       const char* const program_file_name, cl_int* const error);
+
+    cl_int UTILSCPP_EXPORT write_binaries(const cl::Program::Binaries& binaries,
+                                        const std::vector<cl::Device>& devices,
+                                        const char* const program_file_name);
     }
 }

@@ -45,11 +45,11 @@ template <> auto cl::sdk::parse<BinariesOptions>()
 {
 
     return std::make_tuple(std::make_shared<TCLAP::ValueArg<size_t>>(
-                             "s", "start", "Starting number", false, 1'048'576,
+                             "s", "start", "Starting number", false, 1,
                                 "positive integral"),
                               std::make_shared<TCLAP::ValueArg<size_t>>(
                                "l", "length", "Length of input", false,
-                               1'048'576, "positive integral"));
+                               100000, "positive integral"));
 }
 template <>
 BinariesOptions cl::sdk::comprehend<BinariesOptions>(
@@ -72,32 +72,77 @@ int main(int argc, char* argv[])
         const auto& dev_opts = std::get<1>(opts);
         const auto& binaries_opts = std::get<2>(opts);
 
-        // Create runtime objects based on user preference or default
+        // Create context
         cl::Context context = cl::sdk::get_context(dev_opts.triplet);
-        cl::Device device = context.getInfo<CL_CONTEXT_DEVICES>().at(0);
-        cl::CommandQueue queue{ context, device,
+
+        cl_int error;
+        std::vector<cl::Device> devices = context.getInfo<CL_CONTEXT_DEVICES>();
+
+        /// Try to read binary
+        cl::Program::Binaries binaries =
+            cl::util::read_binary_files(devices, "Collatz", &error);
+
+        if (error != CL_SUCCESS)
+        { // if binary not present, compile and save
+            std::cout << "File not found" << "\n";
+
+            std::string program_cl = cl::util::read_text_file("./Collatz.cl", &error);
+            cl::Program program{context, program_cl};
+
+            program.build(devices.at(0));
+
+            binaries = program.getInfo<CL_PROGRAM_BINARIES>(&error);
+            cl::util::write_binaries(binaries, devices, "Collatz");
+
+        }
+
+        // if the binary is already present - calculate
+        std::cout << "File found or constructed properly!" << "\n";
+
+        /// Create all remaining runtime objects
+        cl::CommandQueue queue{ context, devices[0],
                                 cl::QueueProperties::Profiling };
+
         cl::Platform platform{
-            device.getInfo<CL_DEVICE_PLATFORM>()
+            devices.at(0).getInfo<CL_DEVICE_PLATFORM>()
         }; // https://github.com/KhronosGroup/OpenCL-CLHPP/issues/150
 
         if (!diag_opts.quiet)
+        {
             std::cout << "Selected platform: "
                       << platform.getInfo<CL_PLATFORM_VENDOR>() << "\n"
-                      << "Selected device: " << device.getInfo<CL_DEVICE_NAME>()
+                      << "Selected device: " << devices.at(0).getInfo<CL_DEVICE_NAME>()
                       << "\n"
                       << std::endl;
-        cl_int error;
-        std::vector<cl::Device> devices = context.getInfo<CL_CONTEXT_DEVICES>();
-        const char* program_name = "Collatz";
-        cl::Program::Binaries binaries =
-            cl::util::read_binary_files(devices, program_name, &error);
-        if (error != CL_SUCCESS)
-        {
-            std::cout << "File not found";
-            return 0;
         }
-        std::cout << "File found!";
+
+        cl::Program program{ context, devices, binaries };
+        program.build(devices[0]);
+
+        auto collatz = cl::KernelFunctor<cl::Buffer>(program, "Collatz");
+        const size_t length = binaries_opts.length;
+        const size_t start = binaries_opts.start - 1;
+
+        /// Prepare vector of values to extract results
+        std::vector<cl_int> v(length);
+        
+        /// Initialize device-side storage
+        cl::Buffer buf{ context, std::begin(v), std::end(v), false };
+
+        /// Run kernel
+        if (diag_opts.verbose)
+        {
+            std::cout << "Executing on device... ";
+            std::cout.flush();
+        }
+        std::vector<cl::Event> pass;
+        pass.push_back(collatz(
+            cl::EnqueueArgs{ queue, cl::NDRange{ start, length } }, buf));
+
+        cl::WaitForEvents(pass);
+
+        cl::copy(queue, buf, std::begin(v), std::end(v));
+
         return 0;
 
 	} catch (cl::BuildError& e)
