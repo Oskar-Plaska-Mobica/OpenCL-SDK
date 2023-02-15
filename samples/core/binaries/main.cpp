@@ -15,20 +15,14 @@
  */
 
 // OpenCL SDK includes
-#include <CL/Utils/File.hpp>
+#include <CL/Utils/Utils.hpp>
 #include <CL/SDK/Context.hpp>
 #include <CL/SDK/Options.hpp>
 #include <CL/SDK/CLI.hpp>
-#include <CL/SDK/Random.hpp>
 
 // STL includes
 #include <iostream>
-#include <valarray>
-#include <random>
-#include <algorithm>
 #include <fstream>
-#include <tuple> // std::make_tuple
-#include <numeric> // std::accumulate
 
 // TCLAP includes
 #include <tclap/CmdLine.h>
@@ -78,6 +72,22 @@ int main(int argc, char* argv[])
         cl_int error;
         std::vector<cl::Device> devices = context.getInfo<CL_CONTEXT_DEVICES>();
 
+         cl::CommandQueue queue{ context, devices[0],
+                                cl::QueueProperties::Profiling };
+
+        cl::Platform platform{
+            devices.at(0).getInfo<CL_DEVICE_PLATFORM>()
+        }; // https://github.com/KhronosGroup/OpenCL-CLHPP/issues/150
+
+        if (!diag_opts.quiet)
+        {
+            std::cout << "Selected platform: "
+                      << platform.getInfo<CL_PLATFORM_VENDOR>() << "\n"
+                      << "Selected device: "
+                      << devices.at(0).getInfo<CL_DEVICE_NAME>() << "\n"
+                      << std::endl;
+        }
+
         /// Try to read binary
         cl::Program::Binaries binaries =
             cl::util::read_binary_files(devices, "Collatz", &error);
@@ -99,23 +109,7 @@ int main(int argc, char* argv[])
         // if the binary is already present - calculate
         std::cout << "File found or constructed properly!" << "\n";
 
-        /// Create all remaining runtime objects
-        cl::CommandQueue queue{ context, devices[0],
-                                cl::QueueProperties::Profiling };
-
-        cl::Platform platform{
-            devices.at(0).getInfo<CL_DEVICE_PLATFORM>()
-        }; // https://github.com/KhronosGroup/OpenCL-CLHPP/issues/150
-
-        if (!diag_opts.quiet)
-        {
-            std::cout << "Selected platform: "
-                      << platform.getInfo<CL_PLATFORM_VENDOR>() << "\n"
-                      << "Selected device: " << devices.at(0).getInfo<CL_DEVICE_NAME>()
-                      << "\n"
-                      << std::endl;
-        }
-
+        /// Create all remaining runtime object
         cl::Program program{ context, devices, binaries };
         program.build(devices[0]);
 
@@ -135,13 +129,65 @@ int main(int argc, char* argv[])
             std::cout << "Executing on device... ";
             std::cout.flush();
         }
-        std::vector<cl::Event> pass;
-        pass.push_back(collatz(
-            cl::EnqueueArgs{ queue, cl::NDRange{ start, length } }, buf));
+        std::vector<cl::Event> passes;
+        cl::NDRange offset(start);
+        cl::NDRange global(length);
 
-        cl::WaitForEvents(pass);
+        auto dev_start = std::chrono::high_resolution_clock::now();
+        passes.push_back(
+            collatz(cl::EnqueueArgs{ queue, offset, global, cl::NullRange }, buf));
 
+        cl::WaitForEvents(passes);
+        auto dev_end = std::chrono::high_resolution_clock::now();
+        if (diag_opts.verbose) std::cout << "done." << std::endl;
+
+        //print timings
+        if (diag_opts.verbose)
+        {
+            std::cout << "Execution time as seen by host: "
+                      << std::chrono::duration_cast<std::chrono::microseconds>( 
+                         dev_end - dev_start)
+                         .count()
+                      << " us"
+                      << ", by device: ";
+        
+            
+            std::cout << cl::util::get_duration<CL_PROFILING_COMMAND_START,
+                                                CL_PROFILING_COMMAND_END,
+                                                std::chrono::microseconds>(
+                         passes[0])
+                         .count()
+                       << " us" << std::endl;
+        }
+
+        // Fetch results
         cl::copy(queue, buf, std::begin(v), std::end(v));
+
+        /// Show results
+        int max_steps = 0;
+        size_t max_ind = -1;
+        for (size_t i = 0; i < length; ++i)
+            if (v[i] < 0)
+            {
+                std::cerr << "Number " << start + 1 + i
+                          << " gets out of 64 bits at step " << -v[i]
+                          << std::endl;
+            }
+            else if ((v[i] == 0) && (start + i != 0))
+            {
+                std::cerr << "Number " << start + 1 + i
+                          << " did not converge to 1 at step " << INT_MAX - 2
+                          << std::endl;
+            }
+            else if (v[i] > max_steps)
+            {
+                max_steps = v[i];
+                max_ind = start + 1 + i;
+            }
+        std::cout << "From " << length << " numbers checked starting from "
+                  << start + 1 << ", maximum " << max_steps
+                  << " steps was needed to get to 1 for number " << max_ind
+                  << std::endl;
 
         return 0;
 

@@ -12,7 +12,6 @@
 namespace cl {
 namespace util {
 
-   
     std::string UTILSCPP_EXPORT read_text_file(const char* const filename,
                                                cl_int* const error);
 
